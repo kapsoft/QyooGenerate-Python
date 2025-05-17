@@ -1,5 +1,5 @@
 path: /Users/jeffrey/Documents/_dev/QyooGenerate-Python/src/dataset  # <-- full path
-train: train/images              # keep these RELATIVE to `path`
+train: train/images
 val:   val/images
 
 names:

@@ -27,6 +27,22 @@ DOT_GRID = 6
 DOT_R_PX = 12         # radius of each dot in the template
 SHAPE_SIZE = 256      # template square canvas
 
+# ── YOLO-seg needs a polygon with ≤ 32 points ──────────────────────────────
+def normalize_polygon(pts, img_w, img_h, max_pts=32):
+    """
+    pts : Nx2 float32 array in pixel coords (clockwise or CCW)
+    returns flat list [x1,y1,x2,y2,…] normalised 0-1, ≤ max_pts*2 length
+    """
+    # drop alpha channel pts from the same corner to reduce count
+    if len(pts) > max_pts:
+        step = math.ceil(len(pts) / max_pts)
+        pts = pts[::step]
+
+    norm = lambda v, m: max(0.0, min(1.0, v / m))
+    flat = [norm(x, img_w) if i % 2 == 0 else norm(x, img_h)
+            for i, x in enumerate(pts.flatten())]
+    return flat
+
 def render_qyoo(dot_bits=None):
     """
     Return an RGBA PIL image of a single Qyoo with one squared corner.
@@ -105,6 +121,10 @@ def augment_symbol(sym_rgba, canvas_size=640):
                       [random.uniform(w * (1 - margin), w), random.uniform(h * (1 - margin), h)],
                       [random.uniform(0, w * margin),      random.uniform(h * (1 - margin), h)]])
 
+    # ⛑️ Reject bad transforms
+    if not np.isfinite(dst).all():
+        return None, None
+
     M = cv2.getPerspectiveTransform(src, dst)
     warped = cv2.warpPerspective(sym, M, (w, h), borderValue=(0, 0, 0, 0))
 
@@ -156,6 +176,8 @@ def main(args):
         # 2. augment
         canvas_size = args.imgsz
         warped_rgba, quad = augment_symbol(sym_img, canvas_size)
+        if warped_rgba is None:
+            continue  # skip malformed sample
 
         # 3. compose on background
         bg = random_background(canvas_size, args.bg_dir)
@@ -166,23 +188,47 @@ def main(args):
         img_path = img_dir/f"{idx:06d}.jpg"
         cv2.imwrite(str(img_path), cv2.cvtColor(comp, cv2.COLOR_RGB2BGR))
 
-        # 5. YOLO label (single class 0)
-        # quad gives us 4 dst pts; bbox = min/max
-        xs, ys = zip(*quad)
-        x_min, y_min = min(xs), min(ys)
-        x_max, y_max = max(xs), max(ys)
-        # clamp
-        x_min = max(0, min(canvas_size, x_min))
-        x_max = max(0, min(canvas_size, x_max))
-        y_min = max(0, min(canvas_size, y_min))
-        y_max = max(0, min(canvas_size, y_max))
-        cx = (x_min + x_max) / 2 / canvas_size
-        cy = (y_min + y_max) / 2 / canvas_size
-        bw = (x_max - x_min) / canvas_size
-        bh = (y_max - y_min) / canvas_size
+        # 5. YOLO-SEG label (class 0)
+        # ---------------------------------------------------------------▶▶
+        # tight bbox from the 4 warped quad points
+        xs, ys = quad[:, 0], quad[:, 1]
+        x0, y0, x1, y1 = xs.min(), ys.min(), xs.max(), ys.max()
+
+        cx = (x0 + x1) / 2 / canvas_size
+        cy = (y0 + y1) / 2 / canvas_size
+        bw = (x1 - x0)     / canvas_size
+        bh = (y1 - y0)     / canvas_size
+
+        # --- binary mask of the pasted symbol (whole canvas) -------------
+        mask = (warped_rgba[:, :, 3] > 0).astype(np.uint8) * 255  # 0/255, H×W
+
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_NONE)
+        if not cnts:
+            continue                      # should not happen but be safe
+        cnt = max(cnts, key=cv2.contourArea).squeeze()  # Nx2
+
+        if cnt.ndim != 2 or cnt.shape[0] < 3:
+            continue
+
+        # subsample to ≤32 points for YOLO-Seg
+        if cnt.shape[0] > 32:
+            keep = np.linspace(0, cnt.shape[0] - 1, 32, dtype=int)  # use another name
+            cnt  = cnt[keep]
+
+
+        poly_norm = normalize_polygon(cnt, canvas_size, canvas_size)
+
+        # ----------------------------------------------------------------▶▶
+
         lbl_path = lbl_dir/f"{idx:06d}.txt"
-        with open(lbl_path, 'w') as f:
-            f.write(f"0 {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}\n")
+        with open(lbl_path, "w") as f:
+            f.write(
+                "0 " +
+                f"{cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f} " +
+                " ".join(f"{p:.6f}" for p in poly_norm) + "\n"
+            )
+
 
         if idx % 500 == 0:
             print(f"Generated {idx} / {args.count}")
