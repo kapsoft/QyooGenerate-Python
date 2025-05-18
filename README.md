@@ -12,6 +12,9 @@ I would like the ML model to identify the mask around the desired shape and give
 
 I then need to crop the shape and read the dot pattern, something like ![photo of qyoo with grid](samples/3.jpg?raw=true).
 
+
+The final decoding of the dot pattern would be: ![photo of qyoo with grid and numbers](samples/4.jpg?raw=true).
+
 I have taken the following steps to do this, but got stuck:
 
 Steps:
