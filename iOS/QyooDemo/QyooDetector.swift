@@ -216,6 +216,15 @@ class QyooDetector {
         let width = Int(size.width)
         let height = Int(size.height)
         
+        // Find the actual range of values
+        let minVal = mask.min() ?? 0
+        let maxVal = mask.max() ?? 1
+        
+        // Only print occasionally to avoid spam
+        if Int.random(in: 0...100) < 5 {  // Print ~5% of the time
+            print("Mask value range: min=\(minVal), max=\(maxVal)")
+        }
+        
         // Create bitmap context
         let bitsPerComponent = 8
         let bytesPerRow = width * 4
@@ -232,17 +241,29 @@ class QyooDetector {
             return nil
         }
         
-        // Convert mask to RGBA
+        // Convert mask to RGBA with proper normalization
         var rgba = [UInt8](repeating: 0, count: width * height * 4)
         for y in 0..<height {
             for x in 0..<width {
                 let idx = y * width + x
                 let rgbaIdx = idx * 4
-                let val = UInt8(mask[idx] * 255)
-                rgba[rgbaIdx] = 0     // R
-                rgba[rgbaIdx + 1] = 0 // G
-                rgba[rgbaIdx + 2] = 0 // B
-                rgba[rgbaIdx + 3] = val // A
+                
+                // Normalize based on actual min/max range
+                let normalizedValue: Float
+                if maxVal > minVal {
+                    normalizedValue = (mask[idx] - minVal) / (maxVal - minVal)
+                } else {
+                    normalizedValue = 0
+                }
+                
+                // Clamp to 0-1 and convert to UInt8
+                let clampedValue = min(max(normalizedValue, 0.0), 1.0)
+                let val = UInt8(clampedValue * 255)
+                
+                rgba[rgbaIdx] = 255   // R - white mask
+                rgba[rgbaIdx + 1] = 255 // G - white mask
+                rgba[rgbaIdx + 2] = 255 // B - white mask
+                rgba[rgbaIdx + 3] = val // A (alpha/transparency)
             }
         }
         
