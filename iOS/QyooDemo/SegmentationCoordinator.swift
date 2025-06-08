@@ -15,54 +15,86 @@ final class SegmentationCoordinator: NSObject, AVCaptureVideoDataOutputSampleBuf
     private let session = AVCaptureSession()
     private let visionQueue = DispatchQueue(label: "vision.q")
     private let ciContext = CIContext()
-    
-    // The VNCoreMLRequest dedicated to your pure-segmentation model
-    private lazy var visionRequest: VNCoreMLRequest = {
-        let mlmodel = try! best(configuration: .init()).model
-        
-        print("=== model outputs ===")
-        for (name, desc) in mlmodel.modelDescription.outputDescriptionsByName {
-            print("•", name,
-                  "multiArray:",   desc.multiArrayConstraint != nil,
-                  "image:",        desc.imageConstraint      != nil,
-                  desc.multiArrayConstraint?.shape ?? [] ,
-                  desc.imageConstraint?.pixelsWide ?? 0,
-                  desc.imageConstraint?.pixelsHigh ?? 0)
-        }
-        
-        let vnModel  = try! VNCoreMLModel(for: mlmodel)
-        let req = VNCoreMLRequest(model: vnModel, completionHandler: handleSegmentation)
-        req.imageCropAndScaleOption = .scaleFill
-        return req
-    }()
+    private let detector: QyooDetector
     
     /// Hooked up in makeUIView
     weak var previewLayer: AVCaptureVideoPreviewLayer?
     
     init(shared: SharedState) {
         self.shared = shared
+        self.detector = QyooDetector()
         super.init()
     }
     
     func startSession() {
+        
+        // Skip camera setup during testing
+           if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+               print("🧪 Test environment detected - skipping camera session")
+               return
+           }
+        
         guard previewLayer != nil else {
             fatalError("❌ previewLayer must be set before calling startSession()")
         }
         
         session.sessionPreset = .hd1280x720
-        let cam = AVCaptureDevice.default(.builtInWideAngleCamera,
-                                          for: .video, position: .back)!
-        session.addInput( try! AVCaptureDeviceInput(device: cam) )
         
-        let out = AVCaptureVideoDataOutput()
-        out.setSampleBufferDelegate(self, queue: visionQueue)
-        session.addOutput(out)
+        // Safe camera detection with fallbacks
+        var camera: AVCaptureDevice?
         
-        previewLayer!.session = session
-        previewLayer!.videoGravity = .resizeAspectFill
+        // Try back camera first
+        camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
         
-        DispatchQueue.global(qos: .background).async {
-            self.session.startRunning()
+        if camera == nil {
+            print("⚠️ Back camera not available, trying front camera...")
+            camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
+        }
+        
+        if camera == nil {
+            print("⚠️ Wide angle camera not available, trying default camera...")
+            camera = AVCaptureDevice.default(for: .video)
+        }
+        
+        guard let cam = camera else {
+            #if targetEnvironment(simulator)
+                print("📱 Running in simulator - camera not available")
+                fatalError("Camera not available in iOS Simulator. Please test on a physical device.")
+            #else
+                fatalError("❌ No camera available on this device")
+            #endif
+        }
+        
+        print("✅ Using camera: \(cam.localizedName) at position: \(cam.position)")
+        
+        do {
+            let input = try AVCaptureDeviceInput(device: cam)
+            
+            if session.canAddInput(input) {
+                session.addInput(input)
+            } else {
+                fatalError("❌ Cannot add camera input to session")
+            }
+            
+            let out = AVCaptureVideoDataOutput()
+            out.setSampleBufferDelegate(self, queue: visionQueue)
+            
+            if session.canAddOutput(out) {
+                session.addOutput(out)
+            } else {
+                fatalError("❌ Cannot add video output to session")
+            }
+            
+            previewLayer!.session = session
+            previewLayer!.videoGravity = .resizeAspectFill
+            
+            DispatchQueue.global(qos: .background).async {
+                self.session.startRunning()
+                print("📹 Camera session started")
+            }
+            
+        } catch {
+            fatalError("❌ Error setting up camera input: \(error.localizedDescription)")
         }
     }
     
@@ -72,24 +104,25 @@ final class SegmentationCoordinator: NSObject, AVCaptureVideoDataOutputSampleBuf
                        from _: AVCaptureConnection)
     {
         guard let pb = CMSampleBufferGetImageBuffer(sample) else { return }
-        let handler = VNImageRequestHandler(cvPixelBuffer: pb,
-                                            orientation: .right,
-                                            options: [:])
-        try? handler.perform([visionRequest])
+        
+        // Convert CMSampleBuffer to UIImage
+        let ciImage = CIImage(cvPixelBuffer: pb)
+        let context = CIContext()
+        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else { return }
+        let image = UIImage(cgImage: cgImage)
+        
+        // Process image with our detector
+        if let result = detector.detect(image: image) {
+            handleDetection(result: result, imageSize: image.size)
+        }
     }
     
-    // MARK: – Vision completion
-    private func handleSegmentation(request: VNRequest, error: Error?) {
-        guard
-            let pixObs = request.results?.first as? VNPixelBufferObservation,
-            let pl     = previewLayer
-        else { return }
+    // MARK: – Detection handling
+    private func handleDetection(result: (mask: UIImage, confidence: Float), imageSize: CGSize) {
+        guard let pl = previewLayer else { return }
         
-        let maskPB = pixObs.pixelBuffer
-        let ciMask = CIImage(cvPixelBuffer: maskPB)
-        guard let cgMask = ciContext.createCGImage(ciMask,
-                                                   from: ciMask.extent)
-        else { return }
+        // Convert mask to CGImage
+        guard let cgMask = result.mask.cgImage else { return }
         
         // find the minimal bounding rect in the mask
         let w = cgMask.width, h = cgMask.height
@@ -116,7 +149,7 @@ final class SegmentationCoordinator: NSObject, AVCaptureVideoDataOutputSampleBuf
         )
         
         let det = Detection(rect: viewRect,
-                            confidence: pixObs.confidence,
+                            confidence: result.confidence,
                             mask: cgMask)
         
         DispatchQueue.main.async {
@@ -128,7 +161,6 @@ final class SegmentationCoordinator: NSObject, AVCaptureVideoDataOutputSampleBuf
                 self.shared.wantDump = false
                 print("rect:", det.rect, "conf:", det.confidence)
             }
-            //draw(det)
         }
     }
 }
