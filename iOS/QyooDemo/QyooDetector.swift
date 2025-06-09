@@ -277,35 +277,3 @@ class QyooDetector {
         return UIImage(cgImage: cgImage)
     }
 }
-
-// Extension for UIImage to CVPixelBuffer conversion
-extension UIImage {
-    func toCVPixelBuffer(size: CGSize) -> CVPixelBuffer? {
-        var pixelBuffer: CVPixelBuffer?
-        let status = CVPixelBufferCreate(kCFAllocatorDefault,
-                                       Int(size.width),
-                                       Int(size.height),
-                                       kCVPixelFormatType_32ARGB,
-                                       nil,
-                                       &pixelBuffer)
-        
-        guard status == kCVReturnSuccess, let buffer = pixelBuffer else {
-            return nil
-        }
-        
-        CVPixelBufferLockBaseAddress(buffer, [])
-        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
-        
-        let context = CGContext(data: CVPixelBufferGetBaseAddress(buffer),
-                              width: Int(size.width),
-                              height: Int(size.height),
-                              bitsPerComponent: 8,
-                              bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
-                              space: CGColorSpaceCreateDeviceRGB(),
-                              bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue)
-        
-        context?.draw(self.cgImage!, in: CGRect(origin: .zero, size: size))
-        
-        return buffer
-    }
-} 

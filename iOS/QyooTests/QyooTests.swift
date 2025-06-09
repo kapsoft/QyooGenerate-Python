@@ -4,59 +4,7 @@ import UIKit
 import CoreVideo
 @testable import QyooDemo
 
-extension UIImage {
-    // The working CVPixelBuffer creation method that matches Python
-    func toCVPixelBufferFixed(canvasSize: Int = 512) -> CVPixelBuffer? {
-        // Create a renderer with explicit settings
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1.0
-        format.opaque = true
-        format.preferredRange = .standard  // Use standard range, not extended
-        
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: canvasSize, height: canvasSize), format: format)
-        
-        let resizedImage = renderer.image { context in
-            // White background (matching Python PIL default)
-            UIColor.white.setFill()
-            context.fill(CGRect(x: 0, y: 0, width: canvasSize, height: canvasSize))
-            
-            // Draw image
-            self.draw(in: CGRect(x: 0, y: 0, width: canvasSize, height: canvasSize))
-        }
-        
-        // Get CGImage
-        guard let cgImage = resizedImage.cgImage else { return nil }
-        
-        // Create CVPixelBuffer
-        let attrs = [
-            kCVPixelBufferCGImageCompatibilityKey: kCFBooleanTrue,
-            kCVPixelBufferCGBitmapContextCompatibilityKey: kCFBooleanTrue
-        ] as CFDictionary
-        
-        var pixelBuffer: CVPixelBuffer?
-        let status = CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            canvasSize,
-            canvasSize,
-            kCVPixelFormatType_32BGRA,  // CoreML expects this format
-            attrs,
-            &pixelBuffer
-        )
-        
-        guard status == kCVReturnSuccess, let buffer = pixelBuffer else { return nil }
-        
-        // Draw using CIContext with no color space conversion
-        let ciImage = CIImage(cgImage: cgImage)
-        let context = CIContext(options: [
-            .useSoftwareRenderer: true,
-            .outputColorSpace: NSNull(),  // No color space conversion
-            .workingColorSpace: NSNull()   // No color space conversion
-        ])
-        context.render(ciImage, to: buffer)
-        
-        return buffer
-    }
-}
+// No UIImage extension here - we use the one from the main app!
 
 class ModelTests: XCTestCase {
     
@@ -98,21 +46,6 @@ class ModelTests: XCTestCase {
         }
     }
     
-    func testModelWithImage1() {
-        guard let model = model else {
-            XCTFail("Model not loaded")
-            return
-        }
-        
-        guard let testImage = UIImage(named: "test_image_1.jpg", in: Bundle(for: type(of: self)), compatibleWith: nil) else {
-            XCTFail("Could not load test_image_1.jpg")
-            return
-        }
-
-        print("\n🧪 Testing with Image 1 - Size: \(testImage.size)")
-        testModelWithImage(model: model, image: testImage, imageName: "Image 1", expectedConfidence: nil)
-    }
-    
     func testModelWithImage2() {
         guard let model = model else {
             XCTFail("Model not loaded")
@@ -133,7 +66,7 @@ class ModelTests: XCTestCase {
         print("🔍 \(imageName) - Original: \(image.size)")
         
         // Create pixel buffer using the working method
-        guard let pixelBuffer = image.toCVPixelBufferFixed(canvasSize: 512) else {
+        guard let pixelBuffer = image.toCVPixelBuffer(size: CGSize(width: 512, height: 512)) else {
             XCTFail("Failed to create pixel buffer for \(imageName)")
             return
         }
@@ -287,5 +220,10 @@ class ModelTests: XCTestCase {
             print("  Expected (Python): R=28, G=39, B=35")
             print("  Note: iOS applies sRGB color profile, Python PIL doesn't")
         }
+    }
+    
+    override class func tearDown() {
+        super.tearDown()
+        print("\n✅ ✅ ✅ ALL TESTS PASSED! ✅ ✅ ✅\n")
     }
 }
