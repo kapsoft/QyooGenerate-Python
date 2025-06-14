@@ -7,8 +7,20 @@ class QyooDetector {
     private let model: MLModel
     private let imageSize: CGFloat = 512
     
+    // Make these accessible for testing
+    struct Detection {
+        let box: CGRect
+        let confidence: Float
+        let maskCoefficients: [Float]
+    }
+    
+    struct MaskResult {
+        let mask: UIImage
+        let confidence: Float
+        let box: CGRect
+    }
+    
     init() {
-        
         print("Looking for model in bundle...")
         print("Bundle path: \(Bundle.main.bundlePath)")
         print("Bundle resources path: \(Bundle.main.resourcePath ?? "nil")")
@@ -29,21 +41,6 @@ class QyooDetector {
                 print("Successfully loaded model with CPU-only config")
             } else {
                 print("Model not found in bundle")
-                
-                // Check for both .mlmodelc and .mlpackage files
-                let mlmodelcPaths = Bundle.main.paths(forResourcesOfType: "mlmodelc", inDirectory: nil)
-                let mlpackagePaths = Bundle.main.paths(forResourcesOfType: "mlpackage", inDirectory: nil)
-                
-                print("Number of mlmodelc files found: \(mlmodelcPaths.count)")
-                for path in mlmodelcPaths {
-                    print("- \(path)")
-                }
-                
-                print("Number of mlpackage files found: \(mlpackagePaths.count)")
-                for path in mlpackagePaths {
-                    print("- \(path)")
-                }
-                
                 fatalError("Failed to find model in bundle")
             }
         } catch {
@@ -53,7 +50,9 @@ class QyooDetector {
         }
     }
     
-    func detect(image: UIImage) -> (mask: UIImage, confidence: Float)? {
+    // MARK: - Public Methods
+    
+    func detect(image: UIImage) -> MaskResult? {
         guard let pixelBuffer = image.toCVPixelBuffer(size: CGSize(width: imageSize, height: imageSize)) else {
             return nil
         }
@@ -70,9 +69,7 @@ class QyooDetector {
             }
             
             // Process detections
-            let (mask, confidence) = processYOLOv8Output(detections: detections, prototypes: prototypes, originalImage: image)
-            guard let mask = mask else { return nil }
-            return (mask, confidence)
+            return processMask(detections: detections, prototypes: prototypes, originalImage: image)
             
         } catch {
             print("Prediction error: \(error)")
@@ -80,16 +77,14 @@ class QyooDetector {
         }
     }
     
-    private func processYOLOv8Output(detections: MLMultiArray, prototypes: MLMultiArray, originalImage: UIImage) -> (UIImage?, Float) {
-        // YOLOv8 output format: [1, 37, 5376]
-        // 37 = 4 (box) + 1 (class) + 32 (mask coefficients)
+    // MARK: - Testable Methods (internal for testing)
+    
+    internal func findBestDetection(in detections: MLMultiArray, threshold: Float = 0.3) -> Detection? {
         let numDetections = detections.shape[2].intValue // 5376
         
-        var bestConfidence: Float = 0.3 // threshold
-        var bestBox: CGRect?
-        var bestMaskCoeffs: [Float] = []
+        var bestConfidence: Float = threshold
+        var bestDetection: Detection?
         
-        // Find best detection
         for i in 0..<numDetections {
             // Get confidence (class probability)
             let confidence = detections[[0, 4, i] as [NSNumber]].floatValue
@@ -103,34 +98,32 @@ class QyooDetector {
                 let w = detections[[0, 2, i] as [NSNumber]].floatValue
                 let h = detections[[0, 3, i] as [NSNumber]].floatValue
                 
-                // Convert to CGRect (YOLO format to pixel coordinates)
-                let x = CGFloat(xc - w/2) * originalImage.size.width / imageSize
-                let y = CGFloat(yc - h/2) * originalImage.size.height / imageSize
-                let width = CGFloat(w) * originalImage.size.width / imageSize
-                let height = CGFloat(h) * originalImage.size.height / imageSize
-                
-                bestBox = CGRect(x: x, y: y, width: width, height: height)
+                // Convert to CGRect (normalized coordinates 0-512)
+                let box = CGRect(
+                    x: CGFloat(xc - w/2),
+                    y: CGFloat(yc - h/2),
+                    width: CGFloat(w),
+                    height: CGFloat(h)
+                )
                 
                 // Extract 32 mask coefficients
-                bestMaskCoeffs = []
+                var maskCoeffs: [Float] = []
                 for j in 5..<37 {
-                    bestMaskCoeffs.append(detections[[0, j, i] as [NSNumber]].floatValue)
+                    maskCoeffs.append(detections[[0, j, i] as [NSNumber]].floatValue)
                 }
+                
+                bestDetection = Detection(
+                    box: box,
+                    confidence: confidence,
+                    maskCoefficients: maskCoeffs
+                )
             }
         }
         
-        // If no detection found
-        guard let box = bestBox, !bestMaskCoeffs.isEmpty else {
-            return (nil, 0.0)
-        }
-        
-        // Generate mask from coefficients and prototypes
-        let mask = generateMask(coefficients: bestMaskCoeffs, prototypes: prototypes, box: box, imageSize: originalImage.size)
-        
-        return (mask, bestConfidence)
+        return bestDetection
     }
     
-    private func generateMask(coefficients: [Float], prototypes: MLMultiArray, box: CGRect, imageSize: CGSize) -> UIImage? {
+    internal func generateMaskArray(coefficients: [Float], prototypes: MLMultiArray) -> [Float] {
         // Prototypes shape: [1, 32, 128, 128]
         let protoH = 128
         let protoW = 128
@@ -141,6 +134,12 @@ class QyooDetector {
         // Linear combination of prototypes
         for p in 0..<32 {
             let coeff = coefficients[p]
+            
+            // ADD THIS CHECK
+            if coeff < 0 {
+                continue  // Skip negative coefficients
+            }
+            
             for y in 0..<protoH {
                 for x in 0..<protoW {
                     let idx = y * protoW + x
@@ -155,16 +154,49 @@ class QyooDetector {
             mask[i] = 1.0 / (1.0 + exp(-mask[i]))
         }
         
-        // Crop mask to box region and resize to original image
-        return createMaskImage(mask: mask, protoSize: CGSize(width: protoW, height: protoH), 
-                              box: box, imageSize: imageSize)
+        return mask
+    }
+    
+    // MARK: - Private Methods
+    
+    private func processMask(detections: MLMultiArray, prototypes: MLMultiArray, originalImage: UIImage) -> MaskResult? {
+        // Find best detection
+        guard let detection = findBestDetection(in: detections) else {
+            return nil
+        }
+        
+        // Generate mask array
+        let maskArray = generateMaskArray(
+            coefficients: detection.maskCoefficients,
+            prototypes: prototypes
+        )
+        
+        // Scale box to original image size
+        let scaledBox = CGRect(
+            x: detection.box.origin.x * originalImage.size.width / imageSize,
+            y: detection.box.origin.y * originalImage.size.height / imageSize,
+            width: detection.box.width * originalImage.size.width / imageSize,
+            height: detection.box.height * originalImage.size.height / imageSize
+        )
+        
+        // Create mask image
+        guard let maskImage = createMaskImage(
+            mask: maskArray,
+            protoSize: CGSize(width: 128, height: 128),
+            box: scaledBox,
+            imageSize: originalImage.size
+        ) else {
+            return nil
+        }
+        
+        return MaskResult(
+            mask: maskImage,
+            confidence: detection.confidence,
+            box: scaledBox
+        )
     }
     
     private func createMaskImage(mask: [Float], protoSize: CGSize, box: CGRect, imageSize: CGSize) -> UIImage? {
-        // Create binary mask image
-        let width = Int(imageSize.width)
-        let height = Int(imageSize.height)
-        
         // Scale prototype mask to box size
         let scaledMask = scaleMaskToBox(mask: mask, protoSize: protoSize, box: box, imageSize: imageSize)
         
@@ -172,59 +204,71 @@ class QyooDetector {
         return maskToUIImage(mask: scaledMask, size: imageSize)
     }
     
+    // Replace the scaleMaskToBox method in QyooDetector.swift with this fixed version:
+
     private func scaleMaskToBox(mask: [Float], protoSize: CGSize, box: CGRect, imageSize: CGSize) -> [Float] {
         let width = Int(imageSize.width)
         let height = Int(imageSize.height)
         var scaledMask = [Float](repeating: 0, count: width * height)
         
-        // Calculate scaling factors
-        let scaleX = Float(box.width / protoSize.width)
-        let scaleY = Float(box.height / protoSize.height)
+        let protoW = Int(protoSize.width)   // 128
+        let protoH = Int(protoSize.height)  // 128
         
-        // Scale and translate mask
-        for y in 0..<Int(protoSize.height) {
-            for x in 0..<Int(protoSize.width) {
-                let srcIdx = y * Int(protoSize.width) + x
-                let srcX = Float(x) * scaleX + Float(box.minX)
-                let srcY = Float(y) * scaleY + Float(box.minY)
+        // For each pixel in the output mask within the box
+        let boxMinX = Int(max(0, box.minX))
+        let boxMaxX = Int(min(Float(width), Float(box.maxX)))
+        let boxMinY = Int(max(0, box.minY))
+        let boxMaxY = Int(min(Float(height), Float(box.maxY)))
+        
+        for y in boxMinY..<boxMaxY {
+            for x in boxMinX..<boxMaxX {
+                // Map back to prototype coordinates
+                let protoX = Float(x - boxMinX) * Float(protoW) / Float(box.width)
+                let protoY = Float(y - boxMinY) * Float(protoH) / Float(box.height)
                 
                 // Bilinear interpolation
-                let x0 = Int(srcX)
-                let y0 = Int(srcY)
-                let x1 = min(x0 + 1, width - 1)
-                let y1 = min(y0 + 1, height - 1)
+                let x0 = Int(protoX)
+                let y0 = Int(protoY)
+                let x1 = min(x0 + 1, protoW - 1)
+                let y1 = min(y0 + 1, protoH - 1)
                 
-                let wx = srcX - Float(x0)
-                let wy = srcY - Float(y0)
+                let wx = protoX - Float(x0)
+                let wy = protoY - Float(y0)
                 
-                let idx00 = y0 * width + x0
-                let idx01 = y0 * width + x1
-                let idx10 = y1 * width + x0
-                let idx11 = y1 * width + x1
-                
-                let val = mask[srcIdx]
-                scaledMask[idx00] += val * (1 - wx) * (1 - wy)
-                scaledMask[idx01] += val * wx * (1 - wy)
-                scaledMask[idx10] += val * (1 - wx) * wy
-                scaledMask[idx11] += val * wx * wy
+                // Bounds check
+                if x0 >= 0 && x1 < protoW && y0 >= 0 && y1 < protoH {
+                    // Get the four surrounding values
+                    let v00 = mask[y0 * protoW + x0]
+                    let v01 = mask[y0 * protoW + x1]
+                    let v10 = mask[y1 * protoW + x0]
+                    let v11 = mask[y1 * protoW + x1]
+                    
+                    // Interpolate
+                    let value = v00 * (1 - wx) * (1 - wy) +
+                               v01 * wx * (1 - wy) +
+                               v10 * (1 - wx) * wy +
+                               v11 * wx * wy
+                    
+                    let dstIdx = y * width + x
+                    scaledMask[dstIdx] = value
+                }
             }
         }
         
         return scaledMask
     }
     
+    // Also update maskToUIImage to better visualize low values:
     private func maskToUIImage(mask: [Float], size: CGSize) -> UIImage? {
         let width = Int(size.width)
         let height = Int(size.height)
         
-        // Find the actual range of values
-        let minVal = mask.min() ?? 0
-        let maxVal = mask.max() ?? 1
+        // Find the actual range of values for better visualization
+        let nonZeroMask = mask.filter { $0 > 0.01 }
+        let minVal = nonZeroMask.min() ?? 0
+        let maxVal = nonZeroMask.max() ?? 1
         
-        // Only print occasionally to avoid spam
-        if Int.random(in: 0...100) < 5 {  // Print ~5% of the time
-            print("Mask value range: min=\(minVal), max=\(maxVal)")
-        }
+        print("Mask statistics: min=\(minVal), max=\(maxVal), non-zero pixels=\(nonZeroMask.count)")
         
         // Create bitmap context
         let bitsPerComponent = 8
@@ -232,39 +276,44 @@ class QyooDetector {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
         
-        guard let context = CGContext(data: nil,
-                                    width: width,
-                                    height: height,
-                                    bitsPerComponent: bitsPerComponent,
-                                    bytesPerRow: bytesPerRow,
-                                    space: colorSpace,
-                                    bitmapInfo: bitmapInfo.rawValue) else {
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: bitsPerComponent,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo.rawValue
+        ) else {
             return nil
         }
         
-        // Convert mask to RGBA with proper normalization
+        // Convert mask to RGBA with better normalization
         var rgba = [UInt8](repeating: 0, count: width * height * 4)
         for y in 0..<height {
             for x in 0..<width {
                 let idx = y * width + x
                 let rgbaIdx = idx * 4
                 
-                // Normalize based on actual min/max range
-                let normalizedValue: Float
-                if maxVal > minVal {
-                    normalizedValue = (mask[idx] - minVal) / (maxVal - minVal)
+                let maskValue = mask[idx]
+                
+                // Apply threshold and normalize
+                if maskValue > 0.1 {  // Adjust threshold as needed
+                    // Enhance the visualization
+                    let normalizedValue = (maskValue - 0.3) / (1.0 - 0.3)
+                    let val = UInt8(min(max(normalizedValue, 0.0), 1.0) * 255)
+                    
+                    rgba[rgbaIdx] = 255     // R
+                    rgba[rgbaIdx + 1] = 255 // G
+                    rgba[rgbaIdx + 2] = 255 // B
+                    rgba[rgbaIdx + 3] = val // A
                 } else {
-                    normalizedValue = 0
+                    // Fully transparent
+                    rgba[rgbaIdx] = 0
+                    rgba[rgbaIdx + 1] = 0
+                    rgba[rgbaIdx + 2] = 0
+                    rgba[rgbaIdx + 3] = 0
                 }
-                
-                // Clamp to 0-1 and convert to UInt8
-                let clampedValue = min(max(normalizedValue, 0.0), 1.0)
-                let val = UInt8(clampedValue * 255)
-                
-                rgba[rgbaIdx] = 255   // R - white mask
-                rgba[rgbaIdx + 1] = 255 // G - white mask
-                rgba[rgbaIdx + 2] = 255 // B - white mask
-                rgba[rgbaIdx + 3] = val // A (alpha/transparency)
             }
         }
         

@@ -1,0 +1,7 @@
+path: ./samples  # dataset root dir
+train: .  # train images (relative to 'path')
+val: .    # val images (relative to 'path')
+
+# Classes
+names:
+  0: qyoo  # class names 

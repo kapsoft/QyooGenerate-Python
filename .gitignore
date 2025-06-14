@@ -1,0 +1,79 @@
+# Large datasets and training data
+dataset/
+src/dataset/
+dataset_test/
+src/dataset_test/
+backgrounds/
+src/backgrounds/
+
+# Model files and training outputs
+*.pt
+*.onnx
+*.mlpackage/
+*.cache
+*.tflite
+runs/
+src/runs/
+validation_output/
+segmentation_validation_output/
+known_pattern_tests/
+known_pattern_tests_v2/
+
+# Training logs and outputs
+training.log
+*.log
+
+# Generated test images
+*_comparison.png
+*_comparison.jpg
+segmentation_test_output.png
+validation_failures.png
+
+# Virtual environments
+coreml310_env/
+yolov8-coreml-env/
+venv/
+env/
+.env/
+*.env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Xcode
+*.xcuserstate
+iOS/QyooDemo.xcodeproj/project.xcworkspace/xcuserdata/
+iOS/QyooDemo.xcodeproj/xcuserdata/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.temp

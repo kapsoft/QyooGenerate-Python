@@ -118,49 +118,36 @@ final class SegmentationCoordinator: NSObject, AVCaptureVideoDataOutputSampleBuf
     }
     
     // MARK: – Detection handling
-    private func handleDetection(result: (mask: UIImage, confidence: Float), imageSize: CGSize) {
+    // Change the method signature:
+    private func handleDetection(result: QyooDetector.MaskResult, imageSize: CGSize) {
         guard let pl = previewLayer else { return }
         
         // Convert mask to CGImage
         guard let cgMask = result.mask.cgImage else { return }
         
-        // find the minimal bounding rect in the mask
-        let w = cgMask.width, h = cgMask.height
-        guard let data = cgMask.dataProvider?.data,
-              let ptr  = CFDataGetBytePtr(data)
-        else { return }
+        // Use result.box directly instead of calculating from mask
+        // This is actually better because we already have the box!
         
-        var minX = w, minY = h, maxX = 0, maxY = 0
-        for y in 0..<h {
-            for x in 0..<w where ptr[y*w + x] > 128 {
-                minX = min(minX, x); minY = min(minY, y)
-                maxX = max(maxX, x); maxY = max(maxY, y)
-            }
-        }
-        
-        // convert mask coords → view coords
+        // Convert box coords to view coords
         let W = pl.bounds.width, H = pl.bounds.height
-        let scaleX = W / CGFloat(w), scaleY = H / CGFloat(h)
+        let scaleX = W / imageSize.width
+        let scaleY = H / imageSize.height
+        
         let viewRect = CGRect(
-            x: CGFloat(minX) * scaleX,
-            y: CGFloat(h - maxY) * scaleY,      // flip Y
-            width:  CGFloat(maxX - minX) * scaleX,
-            height: CGFloat(maxY - minY) * scaleY
+            x: result.box.origin.x * scaleX,
+            y: (imageSize.height - result.box.maxY) * scaleY,  // flip Y
+            width: result.box.width * scaleX,
+            height: result.box.height * scaleY
         )
         
-        let det = Detection(rect: viewRect,
-                            confidence: result.confidence,
-                            mask: cgMask)
+        let det = Detection(
+            rect: viewRect,
+            confidence: result.confidence,
+            mask: cgMask
+        )
         
         DispatchQueue.main.async {
             self.shared.detections = [det]
-        }
-        
-        DispatchQueue.main.async {
-            if self.shared.wantDump {
-                self.shared.wantDump = false
-                print("rect:", det.rect, "conf:", det.confidence)
-            }
         }
     }
 }
