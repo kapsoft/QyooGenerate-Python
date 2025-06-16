@@ -77,3 +77,69 @@ iOS/QyooDemo.xcodeproj/xcuserdata/
 # Temporary files
 *.tmp
 *.temp
+
+# Credentials and secrets
+.env
+*.env
+dataset_url.txt
+current_pod_id.txt
+
+# Large dataset files and archives
+*.tar.gz
+qyoo_dataset.tar.gz
+
+# Experimental and temporary scripts
+runpod_*.py
+runpod_*.sh
+runpod_*.ipynb
+runpod_*.txt
+ssh_*.py
+run_training_*.py
+auto_train_now.py
+kill_and_fix.py
+launch_training_now.py
+manual_upload_solution.py
+modal_train_qyoo.py
+monitor_*.py
+quick_validate.py
+simple_*.py
+terminate_pod.py
+test_*.py
+train_*.py
+train_*.sh
+upload_*.py
+check_*.py
+continue_generation.py
+create_runpod_ssh.py
+debug_*.py
+dot_reader_fixed.py
+dot_reading_advanced.py
+qyoo_*.py
+analyze_*.py
+validate_*.py
+visualize_*.py
+src/generate_qyoo_meaningful_data.py
+
+# Experimental config files
+dataset_dual_class.yaml
+dataset_meaningful.yaml
+
+# Test and experimental directories
+src/dataset_dual_class/
+src/dataset_meaningful_50k/
+src/dataset_optimized_50k/
+src/test_dual_class/
+src/test_meaningful/
+test_backgrounds/
+test_variations/
+
+# Logs and output files
+generation_log.txt
+upload_instructions.txt
+
+# Marketing and misc images
+DoNotdisturb.jpg
+QyoosGrid.jpg
+QyoosGridwithData.jpg
+marketing_image.webp
+show_samples.py

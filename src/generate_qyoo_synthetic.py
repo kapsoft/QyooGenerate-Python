@@ -105,6 +105,7 @@ def augment_symbol(sym_rgba, canvas_size=640):
     """
     Warp + rotate + scale + translate the RGBA symbol into a square canvas.
     Returns warped RGBA ndarray and the 4 destination points (for bbox).
+    Also returns the grid area coordinates for dual-class labeling.
     """
     # 1. random in‑plane rotation
     angle = random.uniform(0, 360)
@@ -145,7 +146,29 @@ def augment_symbol(sym_rgba, canvas_size=640):
     quad = dst * scale
     quad[:, 0] += x0
     quad[:, 1] += y0
-    return canvas, quad
+    
+    # Calculate grid area coordinates (Class 1)
+    # Original grid area in template: offset by cell size (SHAPE_SIZE // (DOT_GRID + 2))
+    cell = SHAPE_SIZE // (DOT_GRID + 2)  # matches render_qyoo calculation
+    grid_margin = cell  # 1 cell margin on each side
+    
+    # Grid rectangle in original template coordinates
+    grid_src = np.float32([
+        [grid_margin, grid_margin],                                    # top-left
+        [SHAPE_SIZE - grid_margin, grid_margin],                       # top-right  
+        [SHAPE_SIZE - grid_margin, SHAPE_SIZE - grid_margin],          # bottom-right
+        [grid_margin, SHAPE_SIZE - grid_margin]                        # bottom-left
+    ])
+    
+    # Apply same perspective transform as the symbol
+    grid_dst = cv2.perspectiveTransform(grid_src.reshape(1, -1, 2), M).reshape(-1, 2)
+    
+    # Apply same scaling and translation
+    grid_quad = grid_dst * scale
+    grid_quad[:, 0] += x0
+    grid_quad[:, 1] += y0
+    
+    return canvas, quad, grid_quad
 
 def random_background(canvas_size, bg_dir=None):
     if bg_dir and random.random() < 0.7:
@@ -175,7 +198,7 @@ def main(args):
 
         # 2. augment
         canvas_size = args.imgsz
-        warped_rgba, quad = augment_symbol(sym_img, canvas_size)
+        warped_rgba, quad, grid_quad = augment_symbol(sym_img, canvas_size)
         if warped_rgba is None:
             continue  # skip malformed sample
 
@@ -188,9 +211,11 @@ def main(args):
         img_path = img_dir/f"{idx:06d}.jpg"
         cv2.imwrite(str(img_path), cv2.cvtColor(comp, cv2.COLOR_RGB2BGR))
 
-        # 5. YOLO-SEG label (class 0)
-        # ---------------------------------------------------------------▶▶
-        # tight bbox from the 4 warped quad points
+        # 5. DUAL-CLASS YOLO-SEG LABELS
+        # ================================================================▶▶
+        
+        # CLASS 0: Whole Qyoo shape (existing functionality)
+        # ---------------------------------------------------------------
         xs, ys = quad[:, 0], quad[:, 1]
         x0, y0, x1, y1 = xs.min(), ys.min(), xs.max(), ys.max()
 
@@ -216,17 +241,36 @@ def main(args):
             keep = np.linspace(0, cnt.shape[0] - 1, 32, dtype=int)  # use another name
             cnt  = cnt[keep]
 
+        poly_norm_class0 = normalize_polygon(cnt, canvas_size, canvas_size)
 
-        poly_norm = normalize_polygon(cnt, canvas_size, canvas_size)
+        # CLASS 1: Inner grid rectangle (NEW!)
+        # ---------------------------------------------------------------
+        grid_xs, grid_ys = grid_quad[:, 0], grid_quad[:, 1]
+        grid_x0, grid_y0, grid_x1, grid_y1 = grid_xs.min(), grid_ys.min(), grid_xs.max(), grid_ys.max()
 
-        # ----------------------------------------------------------------▶▶
+        grid_cx = (grid_x0 + grid_x1) / 2 / canvas_size
+        grid_cy = (grid_y0 + grid_y1) / 2 / canvas_size
+        grid_bw = (grid_x1 - grid_x0)     / canvas_size
+        grid_bh = (grid_y1 - grid_y0)     / canvas_size
+
+        # Convert grid quad to normalized polygon
+        poly_norm_class1 = normalize_polygon(grid_quad, canvas_size, canvas_size)
+
+        # ================================================================▶▶
 
         lbl_path = lbl_dir/f"{idx:06d}.txt"
         with open(lbl_path, "w") as f:
+            # Write Class 0: Whole Qyoo shape
             f.write(
                 "0 " +
                 f"{cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f} " +
-                " ".join(f"{p:.6f}" for p in poly_norm) + "\n"
+                " ".join(f"{p:.6f}" for p in poly_norm_class0) + "\n"
+            )
+            # Write Class 1: Inner grid rectangle
+            f.write(
+                "1 " +
+                f"{grid_cx:.6f} {grid_cy:.6f} {grid_bw:.6f} {grid_bh:.6f} " +
+                " ".join(f"{p:.6f}" for p in poly_norm_class1) + "\n"
             )
 
 

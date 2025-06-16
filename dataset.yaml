@@ -1,7 +1,15 @@
-path: ./samples  # dataset root dir
-train: .  # train images (relative to 'path')
-val: .    # val images (relative to 'path')
+# Qyoo Dual-Class Dataset Configuration
+path: /workspace/dataset  # dataset root dir
+train: train/images       # train images (relative to 'path')
+val: train/images         # use same for validation (or create separate val set)
 
-# Classes
+# Classes for dual-class architecture
+nc: 2  # number of classes
 names:
-  0: qyoo  # class names 
+  0: qyoo_shape
+  1: grid_rectangle
+
+# Training notes:
+# - Class 0: Complete Qyoo shape (teardrop outline)
+# - Class 1: Grid rectangle (6x6 dot reading area)
+# - This enables: shape detection + precise grid localization
